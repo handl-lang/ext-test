@@ -1,6 +1,6 @@
 //! `hnl-ext-test` — the `test` extension for `hnl` (ADR-0149).
 //!
-//! The runner lives in `handl-plugin-engine-test` (discovery, filters,
+//! The runner lives in `hnl-engine-test` (discovery, filters,
 //! tag predicates, reporters, the ADR-0089 result cache) behind the `test`
 //! capability adapter `handl-plugin-ext-test`; this crate is the
 //! *packaging*: it exports the ADR-0149 ABI (`handl_ext_manifest` /
@@ -100,7 +100,7 @@ fn tooling_host() -> Result<DefaultHost, PlatformError> {
     let mut host = DefaultHost::new();
     host.register_plugin(handl_plugin_ext_test::TestPlugin::new(Arc::new(|| {
         with_tooling_kit(|kit| {
-            Ok::<_, String>(handl_plugin_engine_test::base_runtime(
+            Ok::<_, String>(hnl_engine_test::base_runtime(
                 kit.runtime(),
                 kit.module_root().map(Path::to_path_buf),
             ))
