@@ -14,7 +14,7 @@
 //! (ADR-0149 §Consequences): a `DefaultHost` running the `test` capability
 //! of [`handl_plugin_ext_test::TestPlugin`], with the canonical kit's base
 //! runtime injected through a capture-less factory reading a thread-cached
-//! [`handl_kit_canonical::Kit`] (ADR-0128 §"The 0.8 seam"). The CLI keeps
+//! [`handl_kit_prelude::Kit`] (ADR-0128 §"The 0.8 seam"). The CLI keeps
 //! the *policy* — default paths, flag validation, output streams and exit
 //! code — while the capability does discovery + execution.
 
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use handl_ext::{ExtRequest, ExtResponse, ExtensionManifest};
-use handl_kit_canonical::Kit;
+use handl_kit_prelude::Kit;
 use handl_platform::{CapabilityRequest, DefaultHost, PlatformError};
 use serde_json::json;
 
