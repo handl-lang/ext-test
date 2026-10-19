@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 handl-ext = { git = "https://github.com/handl-lang/kernel", branch = "main" }
 handl-kit-prelude = { git = "https://github.com/handl-lang/kit-prelude", branch = "main" }
+handl-kit-pkg = { git = "https://github.com/handl-lang/kit-pkg", branch = "main" }
 handl-platform = { git = "https://github.com/handl-lang/host", branch = "main" }
 hnl-engine-test = { git = "https://github.com/handl-lang/engine-test", branch = "main" }
 handl-plugin-ext-test = { git = "https://github.com/handl-lang/host", branch = "main" }
