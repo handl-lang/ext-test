@@ -220,8 +220,6 @@ handl-lib-serialize = { path = "../lib-serialize" }
 [patch."https://github.com/handl-lang/lib-kv-map"]
 handl-lib-kv-map = { path = "../lib-kv-map" }
 
-[patch."https://github.com/handl-lang/lib-stats"]
-handl-lib-stats = { path = "../lib-stats" }
 
 [patch."https://github.com/handl-lang/lib-str-handl"]
 handl-lib-str-handl = { path = "../lib-str-handl" }
