@@ -5,6 +5,9 @@ edition = "2024"
 description = "`hnl test` — the test runner as a dynamic `hnl` extension (ADR-0149)."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/handl-lang/ext-test"
+readme = "README.md"
+keywords = ["handl", "extension", "cli"]
+categories = ["development-tools"]
 
 [lib]
 # `cdylib` is the shipped artifact (`libhnl_ext_test.{so,dylib,dll}`);
