@@ -128,9 +128,6 @@ handl-lib-error = { path = "../lib-error" }
 
 
 
-[patch."https://github.com/handl-lang/lib-ip"]
-handl-lib-ip = { path = "../lib-ip" }
-
 
 [patch."https://github.com/handl-lang/lib-kv"]
 handl-plugin-lib-kv = { path = "../lib-kv" }
@@ -187,9 +184,6 @@ handl-lib-prim-handl = { path = "../kernel/crates/prim-handl" }
 handl-lib-serialize = { path = "../lib-serialize" }
 
 
-
-[patch."https://github.com/handl-lang/lib-str-handl"]
-handl-lib-str-handl = { path = "../lib-str-handl" }
 
 
 [patch."https://github.com/handl-lang/lib-transform"]
@@ -250,15 +244,6 @@ handl-runtime = { path = "../host/crates/handl-runtime" }
 [patch."https://github.com/handl-lang/lib-comb"]
 handl-lib-comb = { path = "../lib-comb" }
 
-[patch."https://github.com/handl-lang/lib-desugar"]
-handl-lib-desugar = { path = "../lib-desugar" }
-
-[patch."https://github.com/handl-lang/lib-loader"]
-handl-lib-loader = { path = "../lib-loader" }
-
-[patch."https://github.com/handl-lang/lib-perlin"]
-handl-lib-perlin = { path = "../lib-perlin" }
-
 
 
 [patch."https://github.com/handl-lang/lib-serialize-toml-c"]
@@ -266,7 +251,4 @@ handl-plugin-lib-serialize-toml-c = { path = "../lib-serialize-toml-c" }
 
 [patch."https://github.com/handl-lang/lib-serialize-yaml-c"]
 handl-plugin-lib-serialize-yaml-c = { path = "../lib-serialize-yaml-c" }
-
-[patch."https://github.com/handl-lang/lib-simplex"]
-handl-lib-simplex = { path = "../lib-simplex" }
 
