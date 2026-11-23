@@ -15,7 +15,7 @@ hnl test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto]
 ```
 
 Discovery, tag predicates, reporters, and the `.handl/cache/test-runner/
-cache.json` result cache live in `hnl-engine-test`; this crate runs
+cache.json` result cache live in `hnl-tool-test`; this crate runs
 the `test` capability of `handl-plugin-ext-test` inside a `DefaultHost` and
 keeps only the CLI policy — default paths (`tests/` else `.`), flag
 validation, output streams, exit code.

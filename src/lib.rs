@@ -1,6 +1,6 @@
 //! `hnl-ext-test` — the `test` extension for `hnl` (ADR-0149).
 //!
-//! The runner lives in `hnl-engine-test` (discovery, filters,
+//! The runner lives in `hnl-tool-test` (discovery, filters,
 //! tag predicates, reporters, the ADR-0089 result cache) behind the `test`
 //! capability adapter `handl-plugin-ext-test`; this crate is the
 //! *packaging*: it exports the ADR-0149 ABI (`handl_ext_manifest` /
@@ -103,7 +103,7 @@ fn tooling_host() -> Result<DefaultHost, PlatformError> {
     let mut host = DefaultHost::new();
     host.register_plugin(handl_plugin_ext_test::TestPlugin::new(Arc::new(|| {
         with_tooling_kit(|kit| {
-            Ok::<_, String>(hnl_engine_test::base_runtime(
+            Ok::<_, String>(hnl_tool_test::base_runtime(
                 kit.runtime(),
                 kit.module_root().map(Path::to_path_buf),
             ))
@@ -375,7 +375,7 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
 /// event batch under the project root (`cwd`), streaming each round's
 /// report to the process's real stdout/stderr.
 ///
-/// This never returns an `ExtResponse` in practice — [`hnl_engine_test::run_watch`]
+/// This never returns an `ExtResponse` in practice — [`hnl_tool_test::run_watch`]
 /// blocks until the process is killed. It only returns early on argument
 /// errors or a watcher/discovery failure, so the caller still gets a
 /// well-formed response for those paths.
@@ -406,9 +406,9 @@ fn run_watch_mode(
 
     // Same predicate composition the capability applies: --filter AND
     // every --tag expression.
-    let mut predicate = hnl_engine_test::filter_predicate(filter.unwrap_or(""));
+    let mut predicate = hnl_tool_test::filter_predicate(filter.unwrap_or(""));
     for expr in tags {
-        predicate = predicate.and(hnl_engine_test::tag_expr_predicate(expr));
+        predicate = predicate.and(hnl_tool_test::tag_expr_predicate(expr));
     }
 
     // Same jobs mapping as the capability: omitted = sequential (the
@@ -431,9 +431,9 @@ fn run_watch_mode(
         TOOLING_KIT.with(|cell| *cell.borrow_mut() = Some(kit));
     }
 
-    let source: hnl_engine_test::TestKitSource = Arc::new(|| {
+    let source: hnl_tool_test::TestKitSource = Arc::new(|| {
         with_tooling_kit(|kit| {
-            Ok::<_, String>(hnl_engine_test::base_runtime(
+            Ok::<_, String>(hnl_tool_test::base_runtime(
                 kit.runtime(),
                 kit.module_root().map(Path::to_path_buf),
             ))
@@ -446,16 +446,16 @@ fn run_watch_mode(
     // events to `.hnl`/`.handl`/`.handl.toml`, so build output and `.git`
     // never wake the loop.
     let watch_root = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let options = hnl_engine_test::WatchRunOptions {
+    let options = hnl_tool_test::WatchRunOptions {
         paths: paths.to_vec(),
         watch_roots: vec![watch_root],
         predicate,
         policy,
-        ..hnl_engine_test::WatchRunOptions::default()
+        ..hnl_tool_test::WatchRunOptions::default()
     };
 
     let report_kind = report_kind.to_string();
-    let mut sink = |round: &hnl_engine_test::WatchRound| {
+    let mut sink = |round: &hnl_tool_test::WatchRound| {
         if round.index > 0 {
             eprintln!(
                 "\nwatch: rerun #{} — {} file(s) changed",
@@ -471,15 +471,15 @@ fn run_watch_mode(
         for (file, msg) in &round.plan.parse_errors {
             eprintln!("{}: parse error: {}", file.display(), msg);
         }
-        let summary = hnl_engine_test::summarize(&round.report);
+        let summary = hnl_tool_test::summarize(&round.report);
         let rendered = match report_kind.as_str() {
-            "json" => <hnl_engine_test::JsonReporter as hnl_engine_test::Reporter>::format(
-                &hnl_engine_test::JsonReporter,
+            "json" => <hnl_tool_test::JsonReporter as hnl_tool_test::Reporter>::format(
+                &hnl_tool_test::JsonReporter,
                 &round.report,
                 &summary,
             ),
-            _ => <hnl_engine_test::HumanReporter as hnl_engine_test::Reporter>::format(
-                &hnl_engine_test::HumanReporter,
+            _ => <hnl_tool_test::HumanReporter as hnl_tool_test::Reporter>::format(
+                &hnl_tool_test::HumanReporter,
                 &round.report,
                 &summary,
             ),
@@ -493,7 +493,7 @@ fn run_watch_mode(
         let _ = std::io::stdout().flush();
     };
 
-    match hnl_engine_test::run_watch(&source, &options, &mut sink) {
+    match hnl_tool_test::run_watch(&source, &options, &mut sink) {
         Ok(()) => code(0, out),
         Err(e) => {
             out.err(format!("test: {e}"));
