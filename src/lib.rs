@@ -6,7 +6,7 @@
 //! *packaging*: it exports the ADR-0149 ABI (`handl_ext_manifest` /
 //! `handl_ext_dispatch` / `handl_ext_free`) and implements the
 //! `hnl test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto]
-//! [--report human|json] [--changed] [--cache] [paths...]` command surface —
+//! [--report human|json] [--changed] [--cache] [--watch] [paths...]` command surface —
 //! byte-for-byte the semantics the built-in `test` arm had before the host
 //! went dumb.
 //!
@@ -33,7 +33,7 @@ handl_ext::export!(
         .version(env!("CARGO_PKG_VERSION"))
         .command(
             "test",
-            "test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto] [--report human|json] [--changed] [--cache] [paths...]",
+            "test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto] [--report human|json] [--changed] [--cache] [--watch] [paths...]",
         ),
     dispatch
 );
@@ -97,6 +97,7 @@ fn with_tooling_kit<R>(f: impl FnOnce(&Kit) -> R) -> R {
 /// A host with the `test` plugin registered — the extension consumes the
 /// same `DefaultHost`/`CapabilityRequest` machinery the built-in command
 /// did; only the packaging changed (ADR-0149 §Consequences).
+#[allow(clippy::result_large_err)]
 fn tooling_host() -> Result<DefaultHost, PlatformError> {
     let mut host = DefaultHost::new();
     host.register_plugin(handl_plugin_ext_test::TestPlugin::new(Arc::new(|| {
@@ -122,6 +123,7 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
     let mut report_kind = "human".to_string();
     let mut jobs: Option<String> = None;
     let mut cache = false;
+    let mut watch = false;
     let mut tags: Vec<String> = Vec::new();
     let mut changed = false;
     let mut paths = Vec::new();
@@ -172,6 +174,7 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
             "--list" => list = true,
             "--changed" => changed = true,
             "--cache" => cache = true,
+            "--watch" => watch = true,
             "--json" => report_kind = "json".to_string(),
             "--" => {}
             s if s.starts_with("--") => {
@@ -195,6 +198,24 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
     }
 
     let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+
+    // `--watch` bypasses the one-shot capability path entirely: watch mode
+    // is a long-lived loop that streams each round's report straight to
+    // the process's stdout/stderr (the `ExtResponse` channel only carries
+    // a final result, which a watch session never reaches).
+    if watch {
+        return run_watch_mode(
+            &path_bufs,
+            cwd,
+            filter.as_deref(),
+            &tags,
+            jobs.as_deref(),
+            &report_kind,
+            cache,
+            list,
+            changed,
+        );
+    }
 
     // Park the kit discovered from the request CWD so the injected plugin
     // factory shares this instance instead of assembling a second.
@@ -306,12 +327,146 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
             } else {
                 out.stdout.push_str(rendered);
             }
-            let run_failed =
-                response.0.get("status").and_then(|v| v.as_str()) == Some("failed");
+            let run_failed = response.0.get("status").and_then(|v| v.as_str()) == Some("failed");
             code(if run_failed || had_parse_error { 1 } else { 0 }, out)
         }
         other => {
             out.err(format!("test: unexpected capability status {other:?}"));
+            code(2, out)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `test --watch`
+// ---------------------------------------------------------------------------
+
+/// Run `hnl test --watch`: the initial run plus a rerun per debounced fs
+/// event batch under the project root (`cwd`), streaming each round's
+/// report to the process's real stdout/stderr.
+///
+/// This never returns an `ExtResponse` in practice — [`hnl_engine_test::run_watch`]
+/// blocks until the process is killed. It only returns early on argument
+/// errors or a watcher/discovery failure, so the caller still gets a
+/// well-formed response for those paths.
+#[allow(clippy::too_many_arguments)]
+fn run_watch_mode(
+    paths: &[PathBuf],
+    cwd: &Path,
+    filter: Option<&str>,
+    tags: &[String],
+    jobs: Option<&str>,
+    report_kind: &str,
+    cache: bool,
+    list: bool,
+    changed: bool,
+) -> ExtResponse {
+    let mut out = Out::default();
+    if list {
+        out.err("test: --watch cannot be combined with --list");
+        return code(2, out);
+    }
+    if changed {
+        out.err("test: --watch cannot be combined with --changed");
+        return code(2, out);
+    }
+    if cache {
+        out.err("test: --cache is not supported with --watch (cache disabled)");
+    }
+
+    // Same predicate composition the capability applies: --filter AND
+    // every --tag expression.
+    let mut predicate = hnl_engine_test::filter_predicate(filter.unwrap_or(""));
+    for expr in tags {
+        predicate = predicate.and(hnl_engine_test::tag_expr_predicate(expr));
+    }
+
+    // Same jobs mapping as the capability: omitted = sequential (the
+    // runner default), `auto` = available parallelism, N = parallel(N).
+    let policy = match jobs {
+        None => handl_plugin_lib_scheduler::SchedulePolicy::sequential(),
+        Some("auto") => handl_plugin_lib_scheduler::SchedulePolicy::default(),
+        Some(j) => match j.parse::<usize>() {
+            Ok(n) if n > 0 => handl_plugin_lib_scheduler::SchedulePolicy::parallel(n),
+            _ => {
+                out.err("test: --jobs requires a positive integer or `auto`");
+                return code(2, out);
+            }
+        },
+    };
+
+    // Park the kit discovered from the request CWD (same as `run`) so the
+    // injected factory shares this instance.
+    if let Ok(kit) = Kit::discover(cwd) {
+        TOOLING_KIT.with(|cell| *cell.borrow_mut() = Some(kit));
+    }
+
+    let source: hnl_engine_test::TestKitSource = Arc::new(|| {
+        with_tooling_kit(|kit| {
+            Ok::<_, String>(hnl_engine_test::base_runtime(
+                kit.runtime(),
+                kit.module_root().map(Path::to_path_buf),
+            ))
+        })
+    });
+
+    // Vitest-style ergonomics: watch the whole project root the user ran
+    // `hnl test` in, not just the test directories — helpers living outside
+    // `tests/` still trigger reruns. The watcher-side filter restricts
+    // events to `.hnl`/`.handl`/`.handl.toml`, so build output and `.git`
+    // never wake the loop.
+    let watch_root = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let options = hnl_engine_test::WatchRunOptions {
+        paths: paths.to_vec(),
+        watch_roots: vec![watch_root],
+        predicate,
+        policy,
+        ..hnl_engine_test::WatchRunOptions::default()
+    };
+
+    let report_kind = report_kind.to_string();
+    let mut sink = |round: &hnl_engine_test::WatchRound| {
+        if round.index > 0 {
+            eprintln!(
+                "\nwatch: rerun #{} — {} file(s) changed",
+                round.index,
+                round.changed.len()
+            );
+            for p in &round.changed {
+                eprintln!("  {}", p.display());
+            }
+        }
+        // Parse errors discovered while scanning test modules — same
+        // rendering as the one-shot path.
+        for (file, msg) in &round.plan.parse_errors {
+            eprintln!("{}: parse error: {}", file.display(), msg);
+        }
+        let summary = hnl_engine_test::summarize(&round.report);
+        let rendered = match report_kind.as_str() {
+            "json" => <hnl_engine_test::JsonReporter as hnl_engine_test::Reporter>::format(
+                &hnl_engine_test::JsonReporter,
+                &round.report,
+                &summary,
+            ),
+            _ => <hnl_engine_test::HumanReporter as hnl_engine_test::Reporter>::format(
+                &hnl_engine_test::HumanReporter,
+                &round.report,
+                &summary,
+            ),
+        };
+        if report_kind == "json" {
+            println!("{rendered}");
+        } else {
+            print!("{rendered}");
+        }
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    };
+
+    match hnl_engine_test::run_watch(&source, &options, &mut sink) {
+        Ok(()) => code(0, out),
+        Err(e) => {
+            out.err(format!("test: {e}"));
             code(2, out)
         }
     }
@@ -340,8 +495,7 @@ mod tests {
 
     /// A unique temp dir per test.
     fn tmpdir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("hnl-ext-test-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hnl-ext-test-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -358,8 +512,30 @@ mod tests {
         for flag in ["--filter", "--tag", "--jobs", "--report"] {
             let res = run(&[flag.into()], Path::new("."));
             assert_eq!(res.code, 2, "{flag}");
-            assert!(res.stderr.contains(&format!("test: {flag} requires a value")));
+            assert!(
+                res.stderr
+                    .contains(&format!("test: {flag} requires a value"))
+            );
         }
+    }
+
+    #[test]
+    fn watch_rejects_list_and_changed() {
+        // Both combos fail fast before the watcher is set up — `run` would
+        // otherwise block forever in the watch loop.
+        let res = run(&["--watch".into(), "--list".into()], Path::new("."));
+        assert_eq!(res.code, 2);
+        assert!(
+            res.stderr
+                .contains("--watch cannot be combined with --list")
+        );
+
+        let res = run(&["--watch".into(), "--changed".into()], Path::new("."));
+        assert_eq!(res.code, 2);
+        assert!(
+            res.stderr
+                .contains("--watch cannot be combined with --changed")
+        );
     }
 
     #[test]

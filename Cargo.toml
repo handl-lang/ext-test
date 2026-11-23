@@ -24,6 +24,7 @@ handl-kit-prelude = { git = "https://github.com/handl-lang/kit-prelude", branch 
 handl-kit-pkg = { git = "https://github.com/handl-lang/kit-pkg", branch = "main" }
 handl-platform = { git = "https://github.com/handl-lang/host", branch = "main" }
 hnl-engine-test = { git = "https://github.com/handl-lang/engine-test", branch = "main" }
+handl-plugin-lib-scheduler = { git = "https://github.com/handl-lang/host", branch = "main" }
 handl-plugin-ext-test = { git = "https://github.com/handl-lang/host", branch = "main" }
 serde_json = "1"
 
