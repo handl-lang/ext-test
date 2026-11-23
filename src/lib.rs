@@ -6,7 +6,8 @@
 //! *packaging*: it exports the ADR-0149 ABI (`handl_ext_manifest` /
 //! `handl_ext_dispatch` / `handl_ext_free`) and implements the
 //! `hnl test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto]
-//! [--report human|json] [--changed] [--cache] [--watch] [paths...]` command surface —
+//! [--report human|json] [--changed] [--cache] [--watch]
+//! [--coverage[=out.json]] [paths...]` command surface —
 //! byte-for-byte the semantics the built-in `test` arm had before the host
 //! went dumb.
 //!
@@ -33,7 +34,7 @@ handl_ext::export!(
         .version(env!("CARGO_PKG_VERSION"))
         .command(
             "test",
-            "test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto] [--report human|json] [--changed] [--cache] [--watch] [paths...]",
+            "test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto] [--report human|json] [--changed] [--cache] [--watch] [--coverage[=out.json]] [paths...]",
         ),
     dispatch
 );
@@ -126,6 +127,9 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
     let mut watch = false;
     let mut tags: Vec<String> = Vec::new();
     let mut changed = false;
+    // `--coverage[=path]`: `Some(None)` = enabled, default output path;
+    // `Some(Some(path))` = enabled, explicit JSON output path.
+    let mut coverage: Option<Option<String>> = None;
     let mut paths = Vec::new();
 
     let mut i = 0;
@@ -175,6 +179,15 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
             "--changed" => changed = true,
             "--cache" => cache = true,
             "--watch" => watch = true,
+            "--coverage" => coverage = Some(None),
+            s if s.starts_with("--coverage=") => {
+                let path = &s["--coverage=".len()..];
+                coverage = Some(if path.is_empty() {
+                    None
+                } else {
+                    Some(path.to_string())
+                });
+            }
             "--json" => report_kind = "json".to_string(),
             "--" => {}
             s if s.starts_with("--") => {
@@ -253,6 +266,9 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
     if cache {
         payload["cache"] = json!(true);
     }
+    if coverage.is_some() {
+        payload["coverage"] = json!(true);
+    }
     if let Some(j) = &jobs {
         payload["jobs"] = if j == "auto" {
             json!("auto")
@@ -326,6 +342,20 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
                 out.stdout.push_str(&format!("{rendered}\n"));
             } else {
                 out.stdout.push_str(rendered);
+            }
+            // `--coverage[=path]`: the capability returns the merged
+            // coverage report as JSON; the CLI owns the file write
+            // (default `coverage.json` in the CWD).
+            if let Some(cov_path) = &coverage
+                && let Some(cov) = response.0.get("coverage")
+            {
+                let path = cov_path
+                    .clone()
+                    .unwrap_or_else(|| "coverage.json".to_string());
+                match std::fs::write(&path, serde_json::to_string_pretty(cov).unwrap_or_default()) {
+                    Ok(()) => out.err(format!("test: coverage written to {path}")),
+                    Err(e) => out.err(format!("test: failed to write coverage to {path}: {e}")),
+                }
             }
             let run_failed = response.0.get("status").and_then(|v| v.as_str()) == Some("failed");
             code(if run_failed || had_parse_error { 1 } else { 0 }, out)
@@ -544,6 +574,32 @@ mod tests {
         let res = run(&["--list".into(), dir.display().to_string()], &dir);
         assert_eq!(res.code, 0, "stderr: {}", res.stderr);
         assert_eq!(res.stdout, "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn coverage_flag_writes_json_report() {
+        let dir = tmpdir("cov");
+        let out = dir.join("cov.json");
+        let res = run(
+            &[
+                format!("--coverage={}", out.display()),
+                dir.display().to_string(),
+            ],
+            &dir,
+        );
+        assert_eq!(res.code, 0, "stderr: {}", res.stderr);
+        assert!(
+            res.stderr.contains("coverage written"),
+            "stderr: {}",
+            res.stderr
+        );
+        let text = std::fs::read_to_string(&out).expect("coverage json written");
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // The report labels its coordinate space and carries the merged
+        // per-source table (empty on a tree with no `.hnl` tests).
+        assert!(json.get("coordinateSpace").is_some(), "{json}");
+        assert!(json["sources"].is_array(), "{json}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
