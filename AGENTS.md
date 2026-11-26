@@ -16,7 +16,8 @@ runner packaged as a `libhnl_ext_test.{so,dylib,dll}` cdylib the dumb
 
 - Commands: `hnl test [--list] [--filter <pat>] [--tag <expr>]
   [--jobs N|auto] [--report human|json] [--changed] [--cache]
-  [paths...]`.
+  [--watch] [--coverage[=out.json]] [--timeout <dur>] [paths...]`.
+  `--timeout` takes seconds (`30`, `30s`, `500ms`).
 - Discovery, tag predicates, reporters, and the
   `.handl/cache/test-runner/cache.json` result cache live in
   `hnl-tool-test`; this crate runs the `test` capability of

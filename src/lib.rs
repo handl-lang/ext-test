@@ -7,7 +7,7 @@
 //! `handl_ext_dispatch` / `handl_ext_free`) and implements the
 //! `hnl test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto]
 //! [--report human|json] [--changed] [--cache] [--watch]
-//! [--coverage[=out.json]] [paths...]` command surface —
+//! [--coverage[=out.json]] [--timeout <dur>] [paths...]` command surface —
 //! byte-for-byte the semantics the built-in `test` arm had before the host
 //! went dumb.
 //!
@@ -22,6 +22,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use handl_ext::{ExtRequest, ExtResponse, ExtensionManifest};
 use handl_kit_pkg::KitProjectExt;
@@ -34,7 +35,7 @@ handl_ext::export!(
         .version(env!("CARGO_PKG_VERSION"))
         .command(
             "test",
-            "test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto] [--report human|json] [--changed] [--cache] [--watch] [--coverage[=out.json]] [paths...]",
+            "test [--list] [--filter <pat>] [--tag <expr>] [--jobs N|auto] [--report human|json] [--changed] [--cache] [--watch] [--coverage[=out.json]] [--timeout <dur>] [paths...]",
         ),
     dispatch
 );
@@ -130,6 +131,10 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
     // `--coverage[=path]`: `Some(None)` = enabled, default output path;
     // `Some(Some(path))` = enabled, explicit JSON output path.
     let mut coverage: Option<Option<String>> = None;
+    // `--timeout <dur>`: per-test bound (`RunConfig::timeout` /
+    // `WatchRunOptions::timeout`). Bare number = seconds; `ms`/`s`
+    // suffixes allowed. `None` = unbounded (the runner default).
+    let mut timeout: Option<Duration> = None;
     let mut paths = Vec::new();
 
     let mut i = 0;
@@ -161,6 +166,24 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
                     Some(v) => jobs = Some(v.clone()),
                     None => {
                         out.err("test: --jobs requires a value");
+                        return code(2, out);
+                    }
+                }
+            }
+            "--timeout" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => match parse_timeout(v) {
+                        Some(d) => timeout = Some(d),
+                        None => {
+                            out.err(
+                                "test: --timeout requires a positive duration (e.g. `30`, `30s`, `500ms`)",
+                            );
+                            return code(2, out);
+                        }
+                    },
+                    None => {
+                        out.err("test: --timeout requires a value");
                         return code(2, out);
                     }
                 }
@@ -227,6 +250,7 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
             cache,
             list,
             changed,
+            timeout,
         );
     }
 
@@ -281,6 +305,11 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
                 }
             }
         };
+    }
+    if let Some(t) = timeout {
+        // Seconds as a float — the capability parses `timeout` back into a
+        // `Duration` (`RunConfig::timeout`).
+        payload["timeout"] = json!(t.as_secs_f64());
     }
 
     let request = CapabilityRequest {
@@ -390,6 +419,7 @@ fn run_watch_mode(
     cache: bool,
     list: bool,
     changed: bool,
+    timeout: Option<Duration>,
 ) -> ExtResponse {
     let mut out = Out::default();
     if list {
@@ -451,6 +481,7 @@ fn run_watch_mode(
         watch_roots: vec![watch_root],
         predicate,
         policy,
+        timeout,
         ..hnl_tool_test::WatchRunOptions::default()
     };
 
@@ -506,6 +537,22 @@ fn run_watch_mode(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a `--timeout` duration: a bare number is seconds; `ms`/`s`
+/// suffixes give milliseconds/seconds (e.g. `30`, `30s`, `500ms`).
+/// Must be positive and finite.
+fn parse_timeout(raw: &str) -> Option<Duration> {
+    let raw = raw.trim();
+    let (num, scale) = if let Some(n) = raw.strip_suffix("ms") {
+        (n, 1e-3)
+    } else if let Some(n) = raw.strip_suffix('s') {
+        (n, 1.0)
+    } else {
+        (raw, 1.0)
+    };
+    let secs = num.trim().parse::<f64>().ok()? * scale;
+    (secs.is_finite() && secs > 0.0).then(|| Duration::from_secs_f64(secs))
+}
+
 fn code(c: i32, out: Out) -> ExtResponse {
     ExtResponse {
         code: c,
@@ -539,7 +586,7 @@ mod tests {
 
     #[test]
     fn value_flags_require_a_value() {
-        for flag in ["--filter", "--tag", "--jobs", "--report"] {
+        for flag in ["--filter", "--tag", "--jobs", "--report", "--timeout"] {
             let res = run(&[flag.into()], Path::new("."));
             assert_eq!(res.code, 2, "{flag}");
             assert!(
@@ -547,6 +594,35 @@ mod tests {
                     .contains(&format!("test: {flag} requires a value"))
             );
         }
+    }
+
+    #[test]
+    fn timeout_rejects_non_positive_and_garbage_values() {
+        for bad in ["0", "-1", "abc", "30x", "ms"] {
+            let res = run(
+                &["--timeout".into(), bad.into(), ".".into()],
+                Path::new("."),
+            );
+            assert_eq!(res.code, 2, "--timeout {bad}");
+            assert!(
+                res.stderr.contains("--timeout requires a positive duration"),
+                "stderr: {}",
+                res.stderr
+            );
+        }
+    }
+
+    #[test]
+    fn parse_timeout_accepts_seconds_and_unit_suffixes() {
+        assert_eq!(parse_timeout("30"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_timeout("1.5"), Some(Duration::from_millis(1500)));
+        assert_eq!(parse_timeout("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_timeout("500ms"), Some(Duration::from_millis(500)));
+        assert_eq!(parse_timeout(" 2s "), Some(Duration::from_secs(2)));
+        assert_eq!(parse_timeout("0"), None);
+        assert_eq!(parse_timeout("-5"), None);
+        assert_eq!(parse_timeout("abc"), None);
+        assert_eq!(parse_timeout("30m"), None);
     }
 
     #[test]
