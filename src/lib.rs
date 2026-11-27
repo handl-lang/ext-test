@@ -77,17 +77,57 @@ thread_local! {
     static TOOLING_KIT: RefCell<Option<Kit>> = const { RefCell::new(None) };
 }
 
+/// Discovery anchor parked by `run`/watch before the host is built:
+/// worker threads that miss the thread-local kit re-discover from here
+/// instead of the process CWD (see `kit_anchor`). Process-global — the
+/// CLI runs one command per process, so a single anchor suffices.
+static KIT_ANCHOR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Project-discovery anchor for `Kit::discover`: the requested test
+/// paths' location, not the process CWD. `hnl test /path/to/pkg/…`
+/// invoked from an unrelated directory must still resolve that
+/// package's `.handl.toml` `[dependencies]` — the dogfood sweep runs
+/// `hnl test` per-file from the host root. Files anchor at their
+/// parent dir; the first path wins when several are given (one
+/// runtime serves the whole run, so a multi-package invocation keeps
+/// the historical single-manifest behavior, just anchored at the
+/// first path instead of the CWD).
+fn kit_anchor(cwd: &Path, paths: &[PathBuf]) -> PathBuf {
+    paths
+        .iter()
+        .map(|p| {
+            let abs = if p.is_absolute() {
+                p.clone()
+            } else {
+                cwd.join(p)
+            };
+            if abs.is_file() {
+                abs.parent().map(Path::to_path_buf).unwrap_or(abs)
+            } else {
+                abs
+            }
+        })
+        .next()
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
 /// Run `f` with the thread-cached canonical kit, assembling on first use.
 fn with_tooling_kit<R>(f: impl FnOnce(&Kit) -> R) -> R {
     TOOLING_KIT.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
-            // Project-aware: discover `.handl.toml` from the CWD upward so
-            // `import "dep/..."` resolves against `[dependencies]` (ADR-0128
-            // Phase-5 name resolution).
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            // Project-aware: discover `.handl.toml` upward from the
+            // parked anchor (the test paths' package) so `import
+            // "dep/..."` resolves against `[dependencies]` (ADR-0128
+            // Phase-5 name resolution). Falls back to the CWD when no
+            // anchor was parked (capability invoked outside `run`).
+            let anchor = KIT_ANCHOR
+                .get()
+                .cloned()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
             *slot = Some(
-                Kit::discover(&cwd)
+                Kit::discover(&anchor)
                     .or_else(|_| Kit::new())
                     .expect("canonical kit must assemble"),
             );
@@ -254,9 +294,13 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
         );
     }
 
-    // Park the kit discovered from the request CWD so the injected plugin
-    // factory shares this instance instead of assembling a second.
-    if let Ok(kit) = Kit::discover(cwd) {
+    // Park the discovery anchor + kit for the request paths' package so
+    // the injected plugin factory (on whichever thread it runs) shares
+    // this instance instead of assembling a second — anchored at the
+    // files under test, not the process CWD (see `kit_anchor`).
+    let anchor = kit_anchor(cwd, &path_bufs);
+    let _ = KIT_ANCHOR.set(anchor.clone());
+    if let Ok(kit) = Kit::discover(&anchor) {
         TOOLING_KIT.with(|cell| *cell.borrow_mut() = Some(kit));
     }
 
@@ -455,9 +499,12 @@ fn run_watch_mode(
         },
     };
 
-    // Park the kit discovered from the request CWD (same as `run`) so the
-    // injected factory shares this instance.
-    if let Ok(kit) = Kit::discover(cwd) {
+    // Park the discovery anchor + kit for the watch paths' package
+    // (same anchoring as `run`) so the injected factory shares this
+    // instance on whichever thread it runs.
+    let anchor = kit_anchor(cwd, paths);
+    let _ = KIT_ANCHOR.set(anchor.clone());
+    if let Ok(kit) = Kit::discover(&anchor) {
         TOOLING_KIT.with(|cell| *cell.borrow_mut() = Some(kit));
     }
 
@@ -605,7 +652,8 @@ mod tests {
             );
             assert_eq!(res.code, 2, "--timeout {bad}");
             assert!(
-                res.stderr.contains("--timeout requires a positive duration"),
+                res.stderr
+                    .contains("--timeout requires a positive duration"),
                 "stderr: {}",
                 res.stderr
             );
